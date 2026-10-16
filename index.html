@@ -1442,11 +1442,29 @@ async function spLoadForms(pid){
   while(url){ const j = await spFetch(url, { headers:SP_PREFER }); (j.value || []).forEach(it => { const r = spTake(it); if(r && r.k === "F") forms[r.t] = r.o; }); url = j["@odata.nextLink"]; }
   SP.fl.add(pid);
 }
-function spStatus(k){
+function spStatus(k, extra){
   let el = document.getElementById("spst");
   if(!el){ el = document.createElement("div"); el.id = "spst"; el.setAttribute("role", "status"); el.style.cssText = "position:fixed;left:10px;bottom:84px;z-index:30;font:700 11px 'Nunito Sans',sans-serif;padding:5px 10px;border-radius:99px;background:#fff;border:1px solid #d9dfe8;box-shadow:0 1px 4px rgba(0,0,0,.12);max-width:80vw"; document.body.appendChild(el); }
-  const m = { pending:["Unsaved changes", "#8a6d00"], saving:["Saving to SharePoint…", "#0E4D9B"], saved:["Saved to SharePoint ✓", "#1b7a3a"], error:["Not saved yet, retrying: " + SP.err, "#BD202F"] }[k];
+  const m = { pending:["Unsaved changes", "#8a6d00"], saving:["Saving to SharePoint…" + (extra ? " " + extra : ""), "#0E4D9B"], saved:["Saved to SharePoint ✓", "#1b7a3a"], error:["Not saved yet, retrying: " + SP.err, "#BD202F"] }[k];
   el.textContent = m[0]; el.style.color = m[1];
+}
+// Send changes 20 at a time through Graph $batch; throttled requests wait and retry
+async function spRun(ops){
+  for(let i = 0; i < ops.length; i += 20){
+    let chunk = ops.slice(i, i + 20), tries = 0;
+    if(ops.length > 20) spStatus("saving", Math.min(i + 20, ops.length) + " of " + ops.length);
+    while(chunk.length){
+      const j = await spFetch("/$batch", { method:"POST", body:JSON.stringify({ requests:chunk.map((o, n) => ({ id:String(n), method:o.method, url:o.url, headers:{ "Content-Type":"application/json" }, body:o.body })) }) });
+      const res = {}; (j.responses || []).forEach(r => { res[r.id] = r; });
+      const again = []; let wait = 0;
+      chunk.forEach((o, n) => { const r = res[String(n)] || { status:0 };
+        if(r.status >= 200 && r.status < 300) o.done(r.body || {});
+        else if((r.status === 429 || r.status === 503 || r.status === 0) && tries < 8){ again.push(o); wait = Math.max(wait, parseInt((r.headers || {})["Retry-After"], 10) || 5); }
+        else throw new Error((r.body && r.body.error && r.body.error.message) || ("HTTP " + r.status)); });
+      chunk = again; tries++;
+      if(chunk.length) await new Promise(r => setTimeout(r, wait * 1000));
+    }
+  }
 }
 function spQueue(){ SP.dirty = true; spStatus("pending"); clearTimeout(SP.timer); SP.timer = setTimeout(spPush, 700); return true; }
 async function spPush(){
@@ -1458,14 +1476,17 @@ async function spPush(){
     patients.forEach(p => { if(!p.sum || SP.fl.has(p.id)){ SP.fl.add(p.id); p.sum = summaryOf(p); } });
     patients.forEach(p => { want["P|" + p.id] = { kind:"Patient", title:p.id, uhid:p.id, ft:"", fu:0, st:p.status || "", s:JSON.stringify(p) }; });
     Object.keys(forms).forEach(k => { const r = forms[k]; want["F|" + k] = { kind:"Form", title:k, uhid:r.patientId || "", ft:r.formType || "", fu:r.followUp || 0, st:r.status || "", s:JSON.stringify(r) }; });
+    const ops = [];
     for(const key of Object.keys(want)){
       const w = want[key], cur = SP.snap[key];
       if(cur && cur.s === w.s) continue;
       const fields = { Title:w.title, Kind:w.kind, UHID:w.uhid, FormType:w.ft, FollowUp:w.fu, Status:w.st, Updated:new Date().toISOString(), Payload:w.s };
-      if(cur){ await spFetch(base + "/" + cur.id + "/fields", { method:"PATCH", body:JSON.stringify(fields) }); cur.s = w.s; }
-      else { const j = await spFetch(base, { method:"POST", body:JSON.stringify({ fields:fields }) }); SP.snap[key] = { id:j.id, s:w.s }; }
+      if(cur) ops.push({ method:"PATCH", url:base + "/" + cur.id + "/fields", body:fields, done:() => { cur.s = w.s; } });
+      else ops.push({ method:"POST", url:base, body:{ fields:fields }, done:j => { SP.snap[key] = { id:j.id, s:w.s }; } });
     }
-    for(const key of Object.keys(SP.snap)){ if(!want[key]){ await spFetch(base + "/" + SP.snap[key].id, { method:"DELETE" }); delete SP.snap[key]; } }
+    const inScope = key => key[0] === "P" || SP.fl.has(key.slice(2).split("_")[0]);
+    for(const key of Object.keys(SP.snap)){ if(!want[key] && inScope(key)) ops.push({ method:"DELETE", url:base + "/" + SP.snap[key].id, done:() => { delete SP.snap[key]; } }); }
+    await spRun(ops);
     spStatus("saved");
   }catch(e){ SP.err = e.message; SP.dirty = true; spStatus("error"); clearTimeout(SP.timer); SP.timer = setTimeout(spPush, 20000); }
   SP.busy = false; if(SP.again){ SP.again = false; spQueue(); }
