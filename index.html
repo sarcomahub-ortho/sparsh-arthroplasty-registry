@@ -606,8 +606,11 @@ function typeState(p, type){
   const st = instStates(p, type);
   return st.includes("complete") ? "complete" : st.some(x => x !== "none") ? "partial" : "none";
 }
-const doneType = (p, type) => typeState(p, type) === "complete";
+const lazy = p => SP.on && SP.fl && !SP.fl.has(p.id) && p.sum;
+const doneType = (p, type) => lazy(p) ? !!p.sum[type] : typeState(p, type) === "complete";
+function summaryOf(p){ const op = fvals(p.id + "_operative"), grp = {}; p.joints.forEach(j => { const g = op["f_op_group__" + SL(j)]; if(g) grp[SL(j)] = g; }); return { st:statusOf(p), preop:doneType(p, "preop"), postop:doneType(p, "postop"), grp }; }
 function statusOf(p){
+  if(lazy(p)) return p.sum.st;
   let st = "Registered";
   ["preop","operative","immediate","postop","complications"].forEach(t => { const x = typeState(p, t); if(x === "complete") st = FORM_META[t].status; else if(x === "partial") st = FORM_META[t].t + " (partial)"; });
   return st;
@@ -789,7 +792,7 @@ const SEED = [
 
 /* ---------- SharePoint mode (used only on the hospital web address) ---------- */
 const SPC = { client:"02f403f0-155c-425b-8c31-67ce6ee596f3", tenant:"efff7c7a-31b6-4950-a5c7-e341c44ef1a8", host:"shivaorthopaedic.sharepoint.com", site:"/sites/SPARSHArthroplastyRegistry", list:"Registry Data", scopes:["User.Read","Sites.ReadWrite.All"] };
-const SP = { on:/\.github\.io$/.test(location.hostname) && !/[?&]sp=0/.test(location.search), pca:null, acct:null, siteId:null, listId:null, snap:{}, dirty:false, busy:false, again:false, timer:null, ready:false, err:"" };
+const SP = { on:/\.github\.io$/.test(location.hostname) && !/[?&]sp=0/.test(location.search), pca:null, acct:null, siteId:null, listId:null, snap:{}, fl:new Set(), dirty:false, busy:false, again:false, timer:null, ready:false, err:"" };
 let patients, forms;
 if(SP.on){ patients = []; forms = {}; }
 else { patients = ls.get(KEY_P, null); if(!Array.isArray(patients)){ patients = SEED; ls.set(KEY_P, patients); }
@@ -801,7 +804,7 @@ const pTitle = p => p.name ? `<span class="muted"><b>${esc(p.name)}</b></span>` 
 let signed = false; if(!SP.on){ try{ signed = sessionStorage.getItem(KEY_S) === "1"; }catch(e){} }
 
 /* ---------- ui state ---------- */
-const ui = { reg:null, form:null, calc:null, search:"", pick:null, errors:{} };
+const ui = { reg:null, form:null, calc:null, search:"", pick:null, errors:{}, show:60 };
 const app = $("#app");
 
 /* ---------- router ---------- */
@@ -816,6 +819,11 @@ function route(){
   if(parts.length === 1) return viewList();
   if(parts[1] === "new") return viewReg(null);
   const p = getP(parts[1]);
+  if(p && lazy(p)){
+    app.innerHTML = shell(`<div class="wrap narrow"><div class="card stack center"><h2>Loading patient…</h2><p class="muted">Fetching forms from SharePoint</p></div></div>`, true);
+    spLoadForms(p.id).then(route, e => { app.innerHTML = shell(`<div class="wrap narrow"><div class="card stack"><h2>Could not load this patient</h2><p class="err">${esc(e.message)}</p><a class="btn primary" href="#/patients">Back to patients</a></div></div>`, false); });
+    return;
+  }
   if(!p){ app.innerHTML = shell(`<div class="wrap narrow"><div class="card stack"><h2>Patient not found</h2><a class="btn primary" href="#/patients">Back to patients</a></div></div>`, false); return; }
   if(parts[2] === "edit") return viewReg(p);
   if(parts[2] === "forms" && FORM_META[parts[3]]) return viewForm(p, parts[3], parts[4] ? parseInt(parts[4], 10) : 1);
@@ -872,10 +880,15 @@ function viewList(){
   $("#search").addEventListener("input", e => { ui.search = e.target.value; const q2 = ui.search.trim().toLowerCase(); $("#plist").innerHTML = listCards(patients.filter(p => !q2 || searchText(p).includes(q2))); });
 }
 function listCards(list){
+  const more = list.length > ui.show ? `<button class="btn outline" data-act="more" style="grid-column:1/-1">Show more (${list.length - ui.show} more)</button>` : "";
+  if(list.length > ui.show) return listCards0(list.slice(0, ui.show)) + more;
+  return listCards0(list);
+}
+function listCards0(list){
   if(!list.length) return `<div class="card center muted" style="grid-column:1/-1">No patients match. Tap "New Patient" to register one.</div>`;
   return list.map(p => {
     const op = fvals(p.id + "_operative");
-    const js = p.joints.map(j => { const g = op["f_op_group__" + SL(j)]; return `<b style="color:var(--blue)">${esc(jlab(j))}</b>${g ? " (" + esc(g) + ")" : ""}`; }).join(" · ");
+    const js = p.joints.map(j => { const g = lazy(p) ? (p.sum.grp || {})[SL(j)] : op["f_op_group__" + SL(j)]; return `<b style="color:var(--blue)">${esc(jlab(j))}</b>${g ? " (" + esc(g) + ")" : ""}`; }).join(" · ");
     return `<button class="pcard" data-act="open" data-id="${p.id}">
       <span class="uhid">UHID: ${esc(p.uhid)}</span>${p.name ? `<span><b>${esc(p.name)}</b></span>` : ""}<span class="sid">${[p.sample ? "SAMPLE" : "", p.joints.length > 1 ? "BILATERAL" : ""].filter(Boolean).join(" · ")}</span>
       <span class="muted">${[ageOf(p.dob) != null ? ageOf(p.dob) + " yrs" : "", p.gender, p.site].filter(Boolean).map(esc).join(" • ")}</span>
@@ -1255,6 +1268,7 @@ document.addEventListener("click", ev => {
   const a = t.dataset.act;
   if(a === "cbg"){ if(ev.target === t) closeModal(); return; }
   switch(a){
+    case "more": ui.show += 60; $("#plist").innerHTML = listCards(patients.filter(p => !ui.search.trim() || searchText(p).includes(ui.search.trim().toLowerCase()))); break;
     case "home": location.hash = "#/patients"; break;
     case "back": history.length > 1 ? history.back() : (location.hash = "#/patients"); break;
     case "signout": if(SP.on){ SP.pca.logoutRedirect({ account:SP.acct, onRedirectNavigate:() => false }).then(() => location.reload()); break; } signed = false; try{ sessionStorage.removeItem(KEY_S); }catch(e){} location.hash = "#/login"; break;
@@ -1399,18 +1413,34 @@ async function spLocate(){
   if(!l.value || !l.value.length) throw new Error('SharePoint list "' + SPC.list + '" was not found');
   SP.listId = l.value[0].id;
 }
+const SP_PREFER = { Prefer:"HonorNonIndexedQueriesWarningMayFailRandomly" };
+function spTake(it){
+  const f = it.fields || {}; let o; try{ o = JSON.parse(f.Payload || ""); }catch(e){ return null; }
+  if(f.Kind === "Patient"){ SP.snap["P|" + o.id] = { id:it.id, s:f.Payload }; return { k:"P", o }; }
+  if(f.Kind === "Form"){ SP.snap["F|" + f.Title] = { id:it.id, s:f.Payload }; return { k:"F", t:f.Title, o }; }
+  return null;
+}
+// Patients load up front; each patient's forms load when that patient is opened
 async function spLoad(){
-  let url = "/sites/" + SP.siteId + "/lists/" + SP.listId + "/items?$expand=fields($select=Title,Kind,Payload)&$select=id&$top=500";
-  const P = [], F = {}, snap = {};
-  while(url){
-    const j = await spFetch(url);
-    (j.value || []).forEach(it => { const f = it.fields || {}; let o; try{ o = JSON.parse(f.Payload || ""); }catch(e){ return; }
-      if(f.Kind === "Patient"){ P.push(o); snap["P|" + o.id] = { id:it.id, s:f.Payload }; }
-      else if(f.Kind === "Form"){ F[f.Title] = o; snap["F|" + f.Title] = { id:it.id, s:f.Payload }; } });
-    url = j["@odata.nextLink"];
+  const base = "/sites/" + SP.siteId + "/lists/" + SP.listId + "/items?$expand=fields($select=Title,Kind,Payload)&$select=id&$top=999";
+  const P = []; SP.snap = {}; SP.fl = new Set(); forms = {};
+  let url = base + "&$filter=fields/Kind eq 'Patient'", lazyOk = true;
+  try{
+    while(url){ const j = await spFetch(url, { headers:SP_PREFER }); (j.value || []).forEach(it => { const r = spTake(it); if(r && r.k === "P") P.push(r.o); }); url = j["@odata.nextLink"]; }
+  }catch(e){ lazyOk = false; }
+  if(!lazyOk || P.some(p => !p.sum)){
+    // older entries without a summary, or filtering unavailable: load everything once
+    P.length = 0; SP.snap = {}; url = base;
+    while(url){ const j = await spFetch(url); (j.value || []).forEach(it => { const r = spTake(it); if(!r) return; if(r.k === "P") P.push(r.o); else forms[r.t] = r.o; }); url = j["@odata.nextLink"]; }
+    P.forEach(p => SP.fl.add(p.id));
   }
   P.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
-  patients = P; forms = F; SP.snap = snap;
+  patients = P;
+}
+async function spLoadForms(pid){
+  let url = "/sites/" + SP.siteId + "/lists/" + SP.listId + "/items?$expand=fields($select=Title,Kind,Payload)&$select=id&$top=999&$filter=fields/UHID eq '" + pid + "' and fields/Kind eq 'Form'";
+  while(url){ const j = await spFetch(url, { headers:SP_PREFER }); (j.value || []).forEach(it => { const r = spTake(it); if(r && r.k === "F") forms[r.t] = r.o; }); url = j["@odata.nextLink"]; }
+  SP.fl.add(pid);
 }
 function spStatus(k){
   let el = document.getElementById("spst");
@@ -1425,6 +1455,7 @@ async function spPush(){
   const base = "/sites/" + SP.siteId + "/lists/" + SP.listId + "/items";
   try{
     const want = {};
+    patients.forEach(p => { if(!p.sum || SP.fl.has(p.id)){ SP.fl.add(p.id); p.sum = summaryOf(p); } });
     patients.forEach(p => { want["P|" + p.id] = { kind:"Patient", title:p.id, uhid:p.id, ft:"", fu:0, st:p.status || "", s:JSON.stringify(p) }; });
     Object.keys(forms).forEach(k => { const r = forms[k]; want["F|" + k] = { kind:"Form", title:k, uhid:r.patientId || "", ft:r.formType || "", fu:r.followUp || 0, st:r.status || "", s:JSON.stringify(r) }; });
     for(const key of Object.keys(want)){
