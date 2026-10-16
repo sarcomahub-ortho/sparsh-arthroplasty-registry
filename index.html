@@ -837,7 +837,7 @@ function shell(inner, back){
       ${back ? `<button class="iconbtn" data-act="back" aria-label="Back">‹</button>` : ""}
       <button class="brand" data-act="home">${LOGO}<span class="regname">Arthroplasty<br>Registry</span></button>
     </div>
-    <div class="toplinks"><a class="linkbtn" href="#/patients">Patients List</a><button class="linkbtn" data-act="signout">Sign out</button></div>
+    <div class="toplinks"><a class="linkbtn" href="#/patients">Patients List</a>${isOwner() ? `<button class="linkbtn" data-act="export">Export all data</button>` : ""}<button class="linkbtn" data-act="signout">Sign out</button></div>
   </header>${inner}`;
 }
 
@@ -1269,6 +1269,7 @@ document.addEventListener("click", ev => {
   if(a === "cbg"){ if(ev.target === t) closeModal(); return; }
   switch(a){
     case "more": ui.show += 60; $("#plist").innerHTML = listCards(patients.filter(p => !ui.search.trim() || searchText(p).includes(ui.search.trim().toLowerCase()))); break;
+    case "export": spExport(t); break;
     case "home": location.hash = "#/patients"; break;
     case "back": history.length > 1 ? history.back() : (location.hash = "#/patients"); break;
     case "signout": if(SP.on){ SP.pca.logoutRedirect({ account:SP.acct, onRedirectNavigate:() => false }).then(() => location.reload()); break; } signed = false; try{ sessionStorage.removeItem(KEY_S); }catch(e){} location.hash = "#/login"; break;
@@ -1465,6 +1466,30 @@ async function spRun(ops){
       if(chunk.length) await new Promise(r => setTimeout(r, wait * 1000));
     }
   }
+}
+// Owner-only full export, in the same columns as SharePoint's own CSV export
+const OWNER = "sar@sparshhospital.com";
+function isOwner(){ return SP.on && !!SP.acct && String(SP.acct.username || "").toLowerCase() === OWNER; }
+async function spExport(btn){
+  if(!isOwner() || btn.disabled) return;
+  const label = btn.textContent; btn.disabled = true;
+  const cols = ["Title","Kind","UHID","FormType","FollowUp","Status","Updated","Payload"];
+  const q = v => { const x = v == null ? "" : String(v); return /[",\r\n]/.test(x) ? '"' + x.replace(/"/g, '""') + '"' : x; };
+  const rows = [cols.join(",")];
+  try{
+    let url = "/sites/" + SP.siteId + "/lists/" + SP.listId + "/items?$expand=fields($select=" + cols.join(",") + ")&$select=id&$top=999";
+    while(url){
+      const j = await spFetch(url);
+      (j.value || []).forEach(it => { const f = it.fields || {}; rows.push(cols.map(c => q(f[c])).join(",")); });
+      btn.textContent = "Exporting… " + (rows.length - 1);
+      url = j["@odata.nextLink"];
+    }
+    const blob = new Blob(["\ufeff" + rows.join("\r\n")], { type:"text/csv;charset=utf-8" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "Registry Data " + todayStr() + ".csv";
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    btn.textContent = "Exported " + (rows.length - 1) + " rows ✓";
+  }catch(e){ btn.textContent = "Export failed: " + e.message; }
+  setTimeout(() => { btn.textContent = label; btn.disabled = false; }, 6000);
 }
 function spQueue(){ SP.dirty = true; spStatus("pending"); clearTimeout(SP.timer); SP.timer = setTimeout(spPush, 700); return true; }
 async function spPush(){
