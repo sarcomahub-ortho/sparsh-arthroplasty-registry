@@ -203,12 +203,28 @@ table.ans td:last-child{text-align:right;font-weight:700;padding-left:10px;white
 .cday.tod{border-color:var(--blue)}
 .cday.sel{background:var(--blue);color:#fff}
 .cday:disabled{opacity:.3}
+#printout{display:none}
+@media print{
+  body > *:not(#printout){display:none !important}
+  #printout{display:block;color:#000;font:12px/1.35 Arial,sans-serif}
+  @page{margin:14mm 12mm}
+}
+#printout h1{font-size:18px;margin:0 0 2px}
+#printout h2{font-size:14px;margin:14px 0 4px;padding:3px 6px;background:#e8eef7;break-after:avoid}
+#printout h3{font-size:12px;margin:8px 0 2px;color:#333;break-after:avoid}
+#printout .pside{font-weight:700;margin:6px 0 2px;text-decoration:underline}
+#printout table{width:100%;border-collapse:collapse}
+#printout td{border-bottom:1px solid #ddd;padding:2px 4px;vertical-align:top}
+#printout td:first-child{width:45%;color:#333}
+#printout .pmeta{color:#444;margin:0 0 6px}
+#printout .pfoot{margin-top:14px;color:#666;font-size:10px}
 </style>
 </head>
 <body>
 <div id="app"></div>
 <footer class="foot"><span class="kn"><span class="a">ಸ್ಪರ್ಶ್</span> <span class="b">ಹಾಸ್ಪಿಟಲ್</span></span><span>Academic prototype · data stays in this browser · not for clinical use</span><a href="https://www.sparshhospital.com" target="_blank" rel="noopener">sparshhospital.com</a></footer>
 <div id="modal"></div>
+<div id="printout"></div>
 <div id="toast" hidden></div>
 
 <script>
@@ -425,7 +441,7 @@ function tkaClinical(p){
     sel(p + "mcl", "MCL status (valgus stress at 20 to 30° flexion)", LAX, { showIf: v => v[p + "coronal"] === "Varus" }),
     sel(p + "lcl", "LCL status (varus stress at 20 to 30° flexion)", LAX, { showIf: v => v[p + "coronal"] === "Valgus" }),
     sel(p + "sag", "Sagittal plane deformity (degrees)", R(-30, 60)),
-    sel(p + "flex", "Knee flexion (degrees)", R(0, 140))
+    sel(p + "flex", "Knee flexion up to (degrees)", R(0, 140))
   ]};
 }
 function thaClinical(p){
@@ -514,13 +530,15 @@ function preopSchema(pt){
   ]};
 }
 const opDates = c => (c.joints || []).map(j => ({ j, d: fvals(c.pid + "_operative")["f_op_date__" + SL(j)] || "" }));
+const FU1_NOTE = " (minimum 3 months required)";
 function postopSchema(pt){
   const p = "f_post_", J = pt.joints;
   const dateSec = { title:"Date of assessment", fields:[
     { n:p + "date", l:"Date of assessment", t:"date", hideLabel:true, trigger:true,
       minDate: c => opDates(c).map(x => x.d).filter(Boolean).sort()[0] || "", minMsg:"Follow-up cannot be before the first surgery date." },
     { t:"info", fn:(v, c) => { if(!v.f_post_date) return ""; const out = opDates(c).filter(x => x.d && daysBetween(x.d, v.f_post_date) >= 0).map(x => { const d = daysBetween(x.d, v.f_post_date); return x.j.side + ": about " + (Math.round(d / 30.44 * 10) / 10) + " months (" + d + " days) after surgery"; });
-      return out.length ? out.join(". ") + "." : "Surgery dates are entered in the operative form."; } } ] };
+      const early = (pt.n || 1) === 1 && opDates(c).some(x => x.d && daysBetween(x.d, v.f_post_date) >= 0 && daysBetween(x.d, v.f_post_date) < 91);
+      return out.length ? out.join(". ") + "." + (early ? " Follow-up 1 should be at least 3 months after surgery." : "") : "Surgery dates are entered in the operative form."; } } ] };
   const radio = j => j.joint === "TKA" ? { tint:"radio", title:"Radiographic", desc:"Measured on X-ray", fields:[
         { t:"figure" },
         num(p + "hka", "HKA Angle (°)", { step:.1, min:150, max:210 }),
@@ -549,7 +567,7 @@ function postopSchema(pt){
         sel(p + "hipcentre", "Hip centre position", ["Normal","High","Lateralized"]),
         sel(p + "protrusion", "Protrusion", ["Yes","No"])
       ]};
-  return { title:"Post-Op Follow-up " + (pt.n || 1), desc:"Follow-up scores, radiographic measurements and clinical findings.", steps:[
+  return { title:"Post-Op Follow-up " + (pt.n || 1) + ((pt.n || 1) === 1 ? FU1_NOTE : ""), desc:"Follow-up scores, radiographic measurements and clinical findings.", steps:[
     { label:"Post-op assessment", sections:[ dateSec, promFor(pt, p), mergeSec(J, radio), mergeSec(J, j => j.joint === "TKA" ? tkaClinical(p) : thaClinical(p)), mergeSec(J, () => xraySec("f_post_xray", "X-ray images")) ]}
   ]};
 }
@@ -626,11 +644,14 @@ function pairInfo(v){
   return s;
 }
 
-/* ---------- implant size lists (provisional: confirm with your implant representatives) ---------- */
+/* ---------- implant size lists (provisional: confirm with your implant representatives) ----------
+   PFC Sigma and Attune from DePuy Synthes surgical technique ordering lists and FDA 510(k) K101433 / K111433 */
 const nr = (a, b, s = 1) => { const r = []; for(let i = a; i <= b; i += s) r.push(String(i)); return r; };
 const KNEE_SZ = {
   "Zimmer": { fem:nr(1, 11), tib:"ABCDEFGH".split(""), poly:["10","11","12","13","14","15","17","19"] },
   "DePuy Synthes": { fem:nr(1, 10), tib:nr(1, 10), poly:["5","6","7","8","9","10","12","14","16","18"] },
+  "DePuy Synthes PFC Sigma": { fem:["1","1.5","2","2.5","3","4","5","6"], tib:["1","1.5","2","2.5","3","4","5","6","7"], poly:["8","10","12.5","15","17.5","20","22.5","25"] },
+  "DePuy Synthes Attune": { fem:["1","2","3","3N","4","4N","5","5N","6","6N","7","8","9","10"], tib:nr(1, 10), poly:["5","6","7","8","10","12","14","16","18","20","22"] },
   "Stryker": { fem:nr(1, 10), tib:nr(1, 8), poly:["9","11","13","16","19"] }
 };
 const KNEE_GEN = { fem:nr(1, 10), tib:nr(1, 10), poly:nr(8, 20) };
@@ -639,9 +660,15 @@ const HIP_SZ = {
   "Stryker": { stem:nr(0, 10), cup:nr(44, 66, 2) }
 };
 const HIP_GEN = { stem:nr(1, 12), cup:nr(40, 72, 2) };
-const szNote = tbl => v => tbl[v.f_op_implant] ? "Size list for " + v.f_op_implant + "." : "Generic size list. Choose the implant system to see its sizes.";
+/* DePuy Synthes knees: the design (PFC Sigma / Attune) picks the size list; records saved before the design field keep the older list */
+const kneeSys = v => v.f_op_implant === "DePuy Synthes" && KNEE_SZ["DePuy Synthes " + v.f_op_dpknee] ? "DePuy Synthes " + v.f_op_dpknee : v.f_op_implant;
+const kneeSz = v => KNEE_SZ[kneeSys(v)] || KNEE_GEN;
+const szNote = tbl => v => { const k = tbl === KNEE_SZ ? kneeSys(v) : v.f_op_implant;
+  if(tbl === KNEE_SZ && v.f_op_implant === "DePuy Synthes" && k === "DePuy Synthes") return "Choose the DePuy Synthes knee design above to see its sizes.";
+  return tbl[k] ? "Size list for " + k + "." : "Generic size list. Choose the implant system to see its sizes."; };
+const CEMENT_TYPES = ["Antibiotic-loaded cement","Plain (regular) cement"];
 const SURGEONS = ["Sharan Patil","Ravikumar Mukartihal","Shrishti Patil","Anil Patil","Arun Swamy","Ponnanna KM","Venugopal N","Chetan Dojode","Shashikanth","Chandrashekara","Raviprasad Kattimani","Chetan Nagaraja","Nataraj","Prashanth Jain","Nagesh"].map(n => "Dr " + n);
-const COPY_KEYS = ["f_op_surgeon","f_op_group","f_op_approach","f_op_approach_x","f_op_anaes","f_op_cement","f_op_robot","f_op_robot_x","f_op_implant","f_op_implant_x","f_op_kneetype","f_op_fix","f_op_bearing","f_op_patella","f_op_stem","f_op_sleeve","f_op_aug","f_op_liner","f_op_screws","f_op_stemoff","f_op_headsize","f_op_headlen","f_op_hbearing","f_op_abx","f_op_tq","f_op_reg","f_op_regmod","f_op_cocktail","f_op_drain","f_op_skin"];
+const COPY_KEYS = ["f_op_surgeon","f_op_group","f_op_approach","f_op_approach_x","f_op_anaes","f_op_cement","f_op_robot","f_op_robot_x","f_op_implant","f_op_implant_x","f_op_dpknee","f_op_kneetype","f_op_fix","f_op_cementtype","f_op_bearing","f_op_patella","f_op_stem","f_op_sleeve","f_op_aug","f_op_liner","f_op_screws","f_op_stemoff","f_op_headsize","f_op_headlen","f_op_hbearing","f_op_abx","f_op_tq","f_op_reg","f_op_regmod","f_op_cocktail","f_op_drain","f_op_skin"];
 
 
 function operativeSchema(pt){
@@ -664,18 +691,21 @@ function operativeSchema(pt){
       { n:"f_op_implant_x", l:"Specify Implant System", t:"text", showIf: v => v.f_op_implant === "Other" }
     ];
     return { title:"Implant details", desc:"Size lists follow the implant system chosen", fields: tka ? sysFields.concat([
+      sel("f_op_dpknee", "DePuy Synthes knee design", ["PFC Sigma","Attune","Other DePuy Synthes knee"], { trigger:true, showIf: v => v.f_op_implant === "DePuy Synthes" }),
       sel("f_op_kneetype", "Knee type", ["Cruciate-retaining (CR)","Posterior-stabilized (PS)","Ultra-congruent (UC)","Constrained condylar (CCK)","Rotating hinge"]),
-      sel("f_op_fix", "Fixation", ["Cemented","Hybrid (cemented tibia, uncemented femur)","Uncemented"]),
+      sel("f_op_fix", "Fixation", ["Cemented","Hybrid (cemented tibia, uncemented femur)","Uncemented"], { trigger:true }),
+      sel("f_op_cementtype", "Type of cement", CEMENT_TYPES, { showIf: v => v.f_op_fix === "Cemented" || /^Hybrid/.test(v.f_op_fix || "") }),
       sel("f_op_bearing", "Bearing", ["Fixed bearing","Mobile bearing"]),
       sel("f_op_patella", "Patella resurfaced", yn),
-      sel("f_op_fem", "Femoral component size", v => (KNEE_SZ[v.f_op_implant] || KNEE_GEN).fem, { half:true, hint:szNote(KNEE_SZ) }),
-      sel("f_op_tib", "Tibial component size", v => (KNEE_SZ[v.f_op_implant] || KNEE_GEN).tib, { half:true, hint:szNote(KNEE_SZ) }),
-      sel("f_op_poly", "Polyethylene spacer thickness (mm)", v => (KNEE_SZ[v.f_op_implant] || KNEE_GEN).poly, { hint:szNote(KNEE_SZ) }),
+      sel("f_op_fem", "Femoral component size", v => kneeSz(v).fem, { half:true, hint:szNote(KNEE_SZ) }),
+      sel("f_op_tib", "Tibial component size", v => kneeSz(v).tib, { half:true, hint:szNote(KNEE_SZ) }),
+      sel("f_op_poly", "Polyethylene spacer thickness (mm)", v => kneeSz(v).poly, { hint:szNote(KNEE_SZ) }),
       sel("f_op_stem", "Stem extension", ["None","Femoral","Tibial","Both"]),
       sel("f_op_sleeve", "Metaphyseal sleeve / cone", ["None","Femoral","Tibial","Both"]),
       multi("f_op_aug", "Augments (select all used)", ["Femoral wedge / block","Tibial wedge / block","Femoral cement augmentation","Tibial cement augmentation"])
     ]) : sysFields.concat([
-      sel("f_op_cement", "Cement Used", ["No (uncemented)","Cement for femur","Cement for acetabulum","Cement for both"]),
+      sel("f_op_cement", "Cement Used", ["No (uncemented)","Cement for femur","Cement for acetabulum","Cement for both"], { trigger:true }),
+      sel("f_op_cementtype", "Type of cement", CEMENT_TYPES, { showIf: v => /^Cement for/.test(v.f_op_cement || "") }),
       sel("f_op_cupsize", "Acetabular cup size (mm)", v => (HIP_SZ[v.f_op_implant] || HIP_GEN).cup, { hint:szNote(HIP_SZ) }),
       sel("f_op_liner", "Liner", ["Neutral","Elevated rim","Constrained"]),
       sel("f_op_screws", "Supplementary cup screws", yn),
@@ -1008,12 +1038,12 @@ function viewTimeline(p){
   for(let i = 1; i <= Math.max(1, cnt); i++){
     const d = fvals(p.id + "_postop_" + i).f_post_date;
     const mo = d ? p.joints.map(j => { const od = op["f_op_date__" + SL(j)], x = od ? daysBetween(od, d) : -1; return x >= 0 ? j.side + " " + (Math.round(x / 30.44 * 10) / 10) + " mo" : ""; }).filter(Boolean).join(" · ") : "";
-    fu += tlRow(p, "postop", i, "Post-Op Follow-up " + i, d ? fmtD(d) + (mo ? " · " + mo : "") : FORM_META.postop.d);
+    fu += tlRow(p, "postop", i, "Post-Op Follow-up " + i + (i === 1 ? FU1_NOTE : ""), d ? fmtD(d) + (mo ? " · " + mo : "") : FORM_META.postop.d);
   }
   app.innerHTML = shell(`<div class="wrap narrow stack">
     <a class="linkbtn" href="#/patients" style="align-self:flex-start;padding-left:0">← Back to Patients List</a>
     <div class="card stack">
-      <div class="tl"><div class="t"><h1 style="overflow-wrap:anywhere">UHID: ${esc(p.uhid)}</h1>${p.name ? `<span style="font-weight:700">${esc(p.name)}</span>` : ""}${p.sample ? `<span class="sid"> SAMPLE</span>` : ""}</div><button class="btn outline" data-act="editp" data-id="${p.id}">Update</button></div>
+      <div class="tl"><div class="t"><h1 style="overflow-wrap:anywhere">UHID: ${esc(p.uhid)}</h1>${p.name ? `<span style="font-weight:700">${esc(p.name)}</span>` : ""}${p.sample ? `<span class="sid"> SAMPLE</span>` : ""}</div><div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end"><button class="btn outline" data-act="editp" data-id="${p.id}">Update</button><button class="btn outline" data-act="pdf" data-id="${p.id}">Download PDF</button></div></div>
       <span class="muted">${[ageOf(p.dob) != null ? ageOf(p.dob) + " yrs" : "", p.gender, p.site].filter(Boolean).map(esc).join(" • ")}${p.bmi ? " • BMI " + p.bmi : ""}</span>
       ${p.joints.map(j => `<span class="muted"><b style="color:var(--blue)">${esc(jlab(j))}</b>: ${esc(j.diagnosis || "diagnosis not entered")}${j.diagnosisGroup ? " (" + esc(j.diagnosisGroup) + ")" : ""}</span>`).join("")}
       <div style="display:flex;gap:8px;flex-wrap:wrap">${two && pat ? `<span class="chip">${esc(pat)}</span>` : ""}${statusChip(statusOf(p))}</div>
@@ -1026,6 +1056,55 @@ function viewTimeline(p){
     ${cnt >= 1 ? `<a class="btn" style="text-decoration:none;text-align:center" href="#/patients/${p.id}/forms/postop/${cnt + 1}">+ Add another follow-up</a>` : ""}
     ${tlRow(p, "complications")}${tlRow(p, "notes")}
   </div>`, false);
+}
+
+/* ----- one patient's full record as a printable page: the browser's print dialog saves it as a PDF on this device, nothing is uploaded ----- */
+function pdfVal(fd, v){
+  const x = v[fd.n];
+  if(fd.t === "images") return Array.isArray(x) && x.length ? x.length + " image" + (x.length > 1 ? "s" : "") + " attached (not included)" : "";
+  if(x === undefined || x === null || x === "" || (Array.isArray(x) && !x.length)) return "";
+  if(fd.t === "date") return fmtD(x);
+  if(fd.t === "cpak") return "Type " + x;
+  if(fd.t === "score"){ const ans = v[fd.n + "__ans"], sc = SCORES[fd.calc]; return x + " / " + sc.max + (Array.isArray(ans) ? " (" + scoreResult(fd.calc, ans).band + ")" : ""); }
+  if(fd.t === "select"){ const o = (typeof fd.o === "function" ? fd.o(v) : fd.o).find(o => Array.isArray(o) && o[0] === x); return o ? o[1] : String(x); }
+  return Array.isArray(x) ? x.join(", ") : String(x);
+}
+function pdfForm(p, type, n, title){
+  const rec = forms[formKey(p, type, n)]; if(!rec) return "";
+  const v = rec.values || {}, sf = ui.form, sc = ui.ctx, c = ctxOf(p); c.n = n || 1; c.sel = rec.sides || v.f_pre_sides; ui.form = null; ui.ctx = c;
+  let h = "";
+  try{
+    FORM_META[type].schema(c).steps.forEach(st => st.sections.forEach(sec => {
+      let rows = "", side = "";
+      fieldsOf(sec, v).forEach(fd => {
+        if(fd.t === "label" && fd.side){ side = `<tr><td colspan="2" class="pside">${esc(fd.l)}</td></tr>`; return; }
+        if(!fd.n || fd.n === "f_pre_sides") return;
+        const val = pdfVal(fd, v); if(!val) return;
+        rows += side + `<tr><td>${esc(fd.l)}</td><td>${esc(val)}</td></tr>`; side = "";
+      });
+      if(rows) h += `<h3>${esc(sec.title || "")}</h3><table>${rows}</table>`;
+    }));
+  } finally { ui.form = sf; ui.ctx = sc; }
+  return `<h2>${esc(title)}${rec.status !== "submitted" ? " (draft)" : ""}</h2>` + (h || `<p>No details entered.</p>`);
+}
+function printPatient(p){
+  if(!p) return;
+  const row = (l, x) => x ? `<tr><td>${esc(l)}</td><td>${esc(x)}</td></tr>` : "";
+  const com = (p.comorbidities || []).concat(p.comorbidityOther ? [p.comorbidityOther] : []).join(", ");
+  let h = `<h1>SPARSH Arthroplasty Registry: patient record</h1><p class="pmeta">UHID ${esc(p.uhid)}${p.name ? " · " + esc(p.name) : ""} · printed ${esc(fmtD(todayStr()))}</p>
+    <h2>Patient details</h2><table>${row("UHID", p.uhid)}${row("Name", p.name)}${row("Centre", p.site)}${row("Date of birth", fmtD(p.dob))}${row("Age", ageOf(p.dob) != null ? ageOf(p.dob) + " yrs" : "")}${row("Gender", p.gender)}${row("Height (cm)", p.height)}${row("Weight (kg)", p.weight)}${row("BMI", (b => b ? b.v + " (" + b.c + ")" : "")(bmiOf(p.height, p.weight)))}${row("Comorbidities", com)}
+    ${p.joints.map(j => row(jlab(j), (j.diagnosis || "diagnosis not entered") + (j.diagnosisGroup ? " (" + j.diagnosisGroup + ")" : ""))).join("")}
+    ${p.contra && p.contra !== "No" ? row("Earlier arthroplasty on the opposite side", p.contra.replace("Yes: ", "") + (p.contraYear ? " (" + p.contraYear + ")" : "")) : ""}</table>`;
+  const pc = preCount(p); for(let i = 1; i <= pc; i++) h += pdfForm(p, "preop", i, "Pre-Op Status" + (pc > 1 ? " (assessment " + i + ")" : ""));
+  h += pdfForm(p, "operative", 1, FORM_META.operative.t) + pdfForm(p, "immediate", 1, FORM_META.immediate.t);
+  const fc = fuCount(p); for(let i = 1; i <= fc; i++) h += pdfForm(p, "postop", i, "Post-Op Follow-up " + i);
+  h += pdfForm(p, "complications", 1, FORM_META.complications.t) + pdfForm(p, "notes", 1, FORM_META.notes.t);
+  h += `<p class="pfoot">Confidential patient information. Saved on this device only; the registry copy stays in SharePoint.</p>`;
+  $("#printout").innerHTML = h;
+  const t0 = document.title; document.title = "SPARSH Registry " + p.uhid + (p.name ? " " + p.name : "");
+  const done = () => { document.title = t0; window.removeEventListener("afterprint", done); };
+  window.addEventListener("afterprint", done);
+  setTimeout(() => window.print(), 50);
 }
 
 /* ----- generic form engine ----- */
@@ -1274,6 +1353,7 @@ document.addEventListener("click", ev => {
     case "back": history.length > 1 ? history.back() : (location.hash = "#/patients"); break;
     case "signout": if(SP.on){ SP.pca.logoutRedirect({ account:SP.acct, onRedirectNavigate:() => false }).then(() => location.reload()); break; } signed = false; try{ sessionStorage.removeItem(KEY_S); }catch(e){} location.hash = "#/login"; break;
     case "open": location.hash = "#/patients/" + t.dataset.id; break;
+    case "pdf": printPatient(getP(t.dataset.id)); break;
     case "editp": ui.reg = null; location.hash = "#/patients/" + t.dataset.id + "/edit"; break;
     case "update": openPicker(); break;
     case "pickp": closeModal(); ui.reg = null; location.hash = "#/patients/" + t.dataset.id + "/edit"; break;
