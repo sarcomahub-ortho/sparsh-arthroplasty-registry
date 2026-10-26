@@ -1204,10 +1204,10 @@ function fieldHtml(fd, v){
   }
   if(fd.t === "images"){
     const ids = Array.isArray(val) ? val : [], full = ids.length >= 3;
-    const th = ids.map((id2, i) => `<div class="th"><button type="button" class="vw" data-act="imgview" data-f="${fd.n}" data-i="${i}" aria-label="View image ${i + 1}">${IMG[id2] ? `<img src="${IMG[id2]}" alt="X-ray ${i + 1}">` : ""}</button><button type="button" class="rm" data-act="imgrm" data-f="${fd.n}" data-i="${i}" aria-label="Remove image ${i + 1}">×</button></div>`).join("");
+    const th = ids.map((id2, i) => `<div class="th"><button type="button" class="vw" data-act="imgview" data-f="${fd.n}" data-i="${i}" aria-label="View image ${i + 1}">${IMG[id2] ? `<img src="${IMG[id2]}" alt="X-ray ${i + 1}">` : (xrGet(ui.form.pid, id2) ? `<span class="muted">Loading…</span>` : "")}</button><button type="button" class="rm" data-act="imgrm" data-f="${fd.n}" data-i="${i}" aria-label="Remove image ${i + 1}">×</button></div>`).join("");
     return `<div class="field"><span class="lbl">${esc(fd.l)} <span class="muted">(${ids.length} of 3)</span></span>${ids.length ? `<div class="imgs">${th}</div>` : ""}
       <div class="imgbtns"><label class="btn${full ? " dis" : ""}">Take photo<input type="file" accept="image/*" capture="environment" data-img="${fd.n}"${full ? " disabled" : ""}></label><label class="btn${full ? " dis" : ""}">From gallery<input type="file" accept="image/*" multiple data-img="${fd.n}"${full ? " disabled" : ""}></label></div>
-      <span class="hint">${full ? "Maximum of 3 images reached. Remove one to add another." : "Images are reduced in size automatically."}</span></div>`;
+      <span class="hint">${full ? "Maximum of 3 images reached. Remove one to add another." : "Images are reduced in size automatically" + (SP.on ? " and saved to SharePoint." : ".")}</span></div>`;
   }
   if(fd.t === "cpak"){
     const sug = fd.mldfa && v[fd.mldfa] !== undefined && v[fd.mldfa] !== "" && v[fd.mpta] !== undefined && v[fd.mpta] !== "" ? cpakFrom(v[fd.mldfa], v[fd.mpta]) : null;
@@ -1375,7 +1375,7 @@ document.addEventListener("click", ev => {
     case "regnext": if(validateReg()){ commitReg(); } else { drawReg(); const eb = $(".err"); if(eb) eb.scrollIntoView({ block:"center" }); } break;
     /* forms */
     case "imgrm": { const f = ui.form, a2 = (f.v[t.dataset.f] || []).slice(); a2.splice(+t.dataset.i, 1); f.v[t.dataset.f] = a2; const y = window.scrollY; drawForm(); window.scrollTo(0, y); break; }
-    case "imgview": { const id2 = (ui.form.v[t.dataset.f] || [])[+t.dataset.i]; $("#modal").innerHTML = `<div class="overlay"><div class="sheet viewer">${IMG[id2] ? `<img src="${IMG[id2]}" alt="X-ray image">` : "<p class=\"muted\">Image not available on this device.</p>"}<button class="btn" data-act="cclose">Close</button></div></div>`; document.body.style.overflow = "hidden"; break; }
+    case "imgview": { const id2 = (ui.form.v[t.dataset.f] || [])[+t.dataset.i]; $("#modal").innerHTML = `<div class="overlay"><div class="sheet viewer">${IMG[id2] ? `<img src="${IMG[id2]}" alt="X-ray image">` : `<p class="muted">${xrGet(ui.form.pid, id2) ? "Loading from SharePoint… close and reopen in a moment." : "Image not available on this device."}</p>`}<button class="btn" data-act="cclose">Close</button></div></div>`; document.body.style.overflow = "hidden"; break; }
     case "fback": { const f = ui.form; if(f.step > 0){ f.step--; ui.errors = {}; drawForm(); window.scrollTo(0, 0); } else { ui.form = null; location.hash = "#/patients/" + f.pid; } break; }
     case "fdraft": toast(saveForm(false) ? "Draft saved on this device" : "Not saved: this browser is out of storage"); break;
     case "fnext": { const f = ui.form, schema = schemaOf(f);
@@ -1493,6 +1493,35 @@ async function spLocate(){
   const l = await spFetch("/sites/" + SP.siteId + "/lists?$filter=displayName eq '" + SPC.list + "'&$select=id,displayName");
   if(!l.value || !l.value.length) throw new Error('SharePoint list "' + SPC.list + '" was not found');
   SP.listId = l.value[0].id;
+  try{ SP.driveUrl = (await spFetch("/sites/" + SP.siteId + "/drive?$select=webUrl")).webUrl; }catch(e){}
+}
+// X-rays are saved as files in the site's Documents library: Registry X-rays/<UHID>/<image id>.jpg
+const XR_DIR = "Registry X-rays";
+const xrPath = (uhid, id) => [XR_DIR, uhid, id + ".jpg"].map(encodeURIComponent).join("/");
+const xrUrl = (uhid, id) => SP.driveUrl ? SP.driveUrl + "/" + xrPath(uhid, id) : "";
+const xrIds = r => { const out = []; Object.values((r && r.values) || {}).forEach(v => { if(Array.isArray(v)) v.forEach(x => { if(typeof x === "string" && x.indexOf("img_") === 0) out.push(x); }); }); return out; };
+const XR_UP = new Set(ls.get("sparsh_xr_up", []));
+function xrPending(){ const out = []; Object.keys(forms).forEach(k => { const r = forms[k]; xrIds(r).forEach(id => { if(IMG[id] && !XR_UP.has(id)) out.push([r.patientId || k.split("_")[0], id]); }); }); return out; }
+// Upload this device's X-rays before the forms that refer to them are saved
+async function xrUpload(){
+  for(const [uhid, id] of xrPending()){
+    const blob = await (await fetch(IMG[id])).blob();
+    await spFetch("/sites/" + SP.siteId + "/drive/root:/" + xrPath(uhid, id) + ":/content", { method:"PUT", body:blob, headers:{ "Content-Type":"image/jpeg" } });
+    XR_UP.add(id); ls.set("sparsh_xr_up", Array.from(XR_UP));
+  }
+}
+// Fetch an X-ray taken on another device; true while it is loading
+const XR_GET = {};
+function xrGet(uhid, id){
+  if(!SP.on || !SP.siteId || !uhid || IMG[id]) return false;
+  if(XR_GET[id]) return XR_GET[id] === 1;
+  XR_GET[id] = 1;
+  spFetch("/sites/" + SP.siteId + "/drive/root:/" + xrPath(uhid, id))
+    .then(j => fetch(j["@microsoft.graph.downloadUrl"])).then(r => r.blob())
+    .then(b => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(b); }))
+    .then(d => { IMG[id] = d; idbPut(id, d); XR_UP.add(id); XR_GET[id] = 2; if(ui.form){ const y = window.scrollY; drawForm(); window.scrollTo(0, y); } })
+    .catch(() => { XR_GET[id] = 3; });
+  return true;
 }
 const SP_PREFER = { Prefer:"HonorNonIndexedQueriesWarningMayFailRandomly" };
 function spTake(it){
@@ -1522,6 +1551,7 @@ async function spLoadForms(pid){
   let url = "/sites/" + SP.siteId + "/lists/" + SP.listId + "/items?$expand=fields($select=Title,Kind,Payload)&$select=id&$top=999&$filter=fields/UHID eq '" + pid + "' and fields/Kind eq 'Form'";
   while(url){ const j = await spFetch(url, { headers:SP_PREFER }); (j.value || []).forEach(it => { const r = spTake(it); if(r && r.k === "F") forms[r.t] = r.o; }); url = j["@odata.nextLink"]; }
   SP.fl.add(pid);
+  if(xrPending().length) spQueue();
 }
 function spStatus(k, extra){
   let el = document.getElementById("spst");
@@ -1547,7 +1577,7 @@ async function spRun(ops){
     }
   }
 }
-// Owner-only full export, in the same columns as SharePoint's own CSV export
+// Owner-only full export, in the same columns as SharePoint's own CSV export, plus a link to each X-ray
 const OWNER = "sar@sparshhospital.com";
 function isOwner(){ return SP.on && !!SP.acct && String(SP.acct.username || "").toLowerCase() === OWNER; }
 async function spExport(btn){
@@ -1555,12 +1585,13 @@ async function spExport(btn){
   const label = btn.textContent; btn.disabled = true;
   const cols = ["Title","Kind","UHID","FormType","FollowUp","Status","Updated","Payload"];
   const q = v => { const x = v == null ? "" : String(v); return /[",\r\n]/.test(x) ? '"' + x.replace(/"/g, '""') + '"' : x; };
-  const rows = [cols.join(",")];
+  const rows = [cols.concat("XRays").join(",")];
+  const xr = f => { if(f.Kind !== "Form") return ""; try{ return xrIds(JSON.parse(f.Payload)).map(id => xrUrl(f.UHID, id)).join(" "); }catch(e){ return ""; } };
   try{
     let url = "/sites/" + SP.siteId + "/lists/" + SP.listId + "/items?$expand=fields($select=" + cols.join(",") + ")&$select=id&$top=999";
     while(url){
       const j = await spFetch(url);
-      (j.value || []).forEach(it => { const f = it.fields || {}; rows.push(cols.map(c => q(f[c])).join(",")); });
+      (j.value || []).forEach(it => { const f = it.fields || {}; rows.push(cols.map(c => q(f[c])).concat(q(xr(f))).join(",")); });
       btn.textContent = "Exporting… " + (rows.length - 1);
       url = j["@odata.nextLink"];
     }
@@ -1577,6 +1608,7 @@ async function spPush(){
   SP.busy = true; SP.dirty = false; spStatus("saving");
   const base = "/sites/" + SP.siteId + "/lists/" + SP.listId + "/items";
   try{
+    await xrUpload();
     const want = {};
     patients.forEach(p => { if(!p.sum || SP.fl.has(p.id)){ SP.fl.add(p.id); p.sum = summaryOf(p); } });
     patients.forEach(p => { want["P|" + p.id] = { kind:"Patient", title:p.id, uhid:p.id, ft:"", fu:0, st:p.status || "", s:JSON.stringify(p) }; });
