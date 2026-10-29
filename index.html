@@ -831,6 +831,9 @@ const savePatients = () => SP.on ? spQueue() : ls.set(KEY_P, patients);
 const saveForms = () => SP.on ? spQueue() : ls.set(KEY_F, forms);
 const getP = id => patients.find(p => p.id === id);
 const pTitle = p => p.name ? `<span class="muted"><b>${esc(p.name)}</b></span>` : "";
+/* public demo link (?sp=0 on the hospital web address) stops working after this time */
+const DEMO_END = new Date("2026-11-06T23:59:59+05:30");
+const demoOver = () => !SP.on && /\.github\.io$/.test(location.hostname) && Date.now() > DEMO_END.getTime();
 let signed = false; if(!SP.on){ try{ signed = sessionStorage.getItem(KEY_S) === "1"; }catch(e){} }
 
 /* ---------- ui state ---------- */
@@ -840,6 +843,7 @@ const app = $("#app");
 /* ---------- router ---------- */
 function route(){
   if(SP.on && !SP.ready) return;
+  if(demoOver()) return viewDemoOver();
   const h = location.hash.replace(/^#/, "") || "/patients";
   if(!signed && h !== "/login"){ location.hash = "#/login"; return; }
   const parts = h.split("/").filter(Boolean);
@@ -882,6 +886,14 @@ function viewLogin(){
       <p class="note">Demo access only: no account is needed. Entries are saved in this browser, not on a server. Real accounts and a hospital database are needed before using patient data.</p>
     </form></div></div>`;
   $("#login").addEventListener("submit", e => { e.preventDefault(); signed = true; try{ sessionStorage.setItem(KEY_S, "1"); }catch(_){} location.hash = "#/patients"; });
+}
+
+function viewDemoOver(){
+  app.innerHTML = `<div class="wrap narrow" style="padding-top:8vh"><div class="card stack" style="border-top:4px solid var(--blue);text-align:center">
+    ${LOGO.replace('class="logo"','class="logo xl"')}
+    <h1>Demo has ended</h1>
+    <p class="muted">The trial period for the SPARSH Arthroplasty Registry demo is over. Thank you for testing.</p>
+    </div></div>`;
 }
 
 function statusChip(s){
